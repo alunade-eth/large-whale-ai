@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Usage: ./launch.sh <mode> <model_size> [steps] [nodes]
+# Usage: ./run_baseline <mode> <model_size> [steps] [nodes]
 #
 # Modes:     throughput  (50 steps, no logging)
 #            train       (N steps, with W&B and Tensorboard)
@@ -12,8 +12,8 @@
 
 set -euo pipefail
 
-MODE=${1:?Usage: ./launch.sh <mode> <model_size> [steps] [nodes]}
-MODEL_SIZE=${2:?Usage: ./launch.sh <mode> <model_size> [steps] [nodes]}
+MODE=${1:?Usage: ./run_baseline <mode> <model_size> [steps] [nodes]}
+MODEL_SIZE=${2:?Usage: ./run_baseline <mode> <model_size> [steps] [nodes]}
 
 ################ Mode config ################
 case $MODE in
@@ -28,7 +28,7 @@ case $MODE in
         WANDB=false
         ;;
     train)
-        TRAINING_STEPS=${3:?Usage: ./launch.sh train <model_size> <steps> [nodes]}
+        TRAINING_STEPS=${3:?Usage: ./run_baseline train <model_size> <steps> [nodes]}
         NODES=${4:-4}
         TIME=02:30:00
         EVAL_INTERVAL=1000
