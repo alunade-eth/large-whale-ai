@@ -1,4 +1,4 @@
 logs/
 experiments/
-cache/
+dataset_cache/
 data/climbmix_small/
