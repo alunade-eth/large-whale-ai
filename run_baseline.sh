@@ -128,10 +128,12 @@ cat >> "$SCRIPT" << 'BODY'
 echo "START TIME: $(date)"
 
 ################ Configs ################
-WORKDIR=$HOME/Project/large-whale-ai
+WORKDIR=$HOME/scratch/large-whale-ai
 MEGATRON_LM_DIR=$WORKDIR/Megatron-LM
 DATA_PREFIX=/capstor/store/cscs/swissai/infra01/datasets/nvidia/Nemotron-ClimbMix/climbmix_small_megatron/climbmix_small
-DATASET_CACHE_DIR=/capstor/scratch/cscs/lsaie-ss26/$USER/gipfelsturm/cache
+DATASET_CACHE_DIR=$WORKDIR/dataset_cache
+
+mkdir -p $DATASET_CACHE_DIR
 BODY
 
 cat >> "$SCRIPT" << CONFIGS
@@ -143,9 +145,9 @@ SEQ_LEN=${SEQ_LEN}
 TRAINING_STEPS=${TRAINING_STEPS}
 
 # Logging
-PROJECT_NAME=gipfelsturm
+EXP_DIR=\$WORKDIR/experiments
 EXP_NAME=${MODE}-${MODEL_SIZE}-\${SLURM_NNODES}n
-LOG_DIR=/capstor/scratch/cscs/lsaie-ss26/\$USER/gipfelsturm/\$PROJECT_NAME/\$EXP_NAME
+LOG_DIR=\$EXP_DIR/\$EXP_NAME
 TENSORBOARD_DIR=\$LOG_DIR/tensorboard
 CONFIGS
 
@@ -153,7 +155,7 @@ cat >> "$SCRIPT" << 'SETUP'
 
 #########################################
 
-mkdir -p logs $LOG_DIR $TENSORBOARD_DIR $DATASET_CACHE_DIR
+mkdir -p logs $EXP_DIR $LOG_DIR $TENSORBOARD_DIR $DATASET_CACHE_DIR
 
 cd $MEGATRON_LM_DIR
 
@@ -164,8 +166,8 @@ export PYTHONPATH=$MEGATRON_LM_DIR:$PYTHONPATH
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 export TORCH_NCCL_AVOID_RECORD_STREAMS=1
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
-export TRITON_CACHE_DIR=/capstor/scratch/cscs/lsaie-ss26/$USER/gipfelsturm/.triton_cache
-export TORCHINDUCTOR_CACHE_DIR=/capstor/scratch/cscs/lsaie-ss26/$USER/gipfelsturm/.inductor_cache
+export TRITON_CACHE_DIR=$EXP_DIR/.triton_cache
+export TORCHINDUCTOR_CACHE_DIR=$EXP_DIR/.inductor_cache
 export OMP_NUM_THREADS=$((SLURM_CPUS_PER_TASK/SLURM_GPUS_PER_NODE))
 MASTER_ADDR=$(hostname)
 MASTER_PORT=25678
