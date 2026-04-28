@@ -121,6 +121,8 @@ cat >> "$SCRIPT" << SBATCH_DIRECTIVES
 #SBATCH --cpus-per-task=288
 #SBATCH --mem=460000
 #SBATCH --no-requeue
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --mail-user=placeholder@email.com
 SBATCH_DIRECTIVES
 
 cat >> "$SCRIPT" << 'BODY'
