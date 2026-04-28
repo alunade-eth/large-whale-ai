@@ -166,8 +166,8 @@ export PYTHONPATH=$MEGATRON_LM_DIR:$PYTHONPATH
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 export TORCH_NCCL_AVOID_RECORD_STREAMS=1
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
-export TRITON_CACHE_DIR=$EXP_DIR/.triton_cache
-export TORCHINDUCTOR_CACHE_DIR=$EXP_DIR/.inductor_cache
+export TRITON_CACHE_DIR=/tmp/.triton_cache
+export TORCHINDUCTOR_CACHE_DIR=/tmp/.inductor_cache
 export OMP_NUM_THREADS=$((SLURM_CPUS_PER_TASK/SLURM_GPUS_PER_NODE))
 MASTER_ADDR=$(hostname)
 MASTER_PORT=25678
@@ -264,8 +264,8 @@ cat >> "$SCRIPT" << 'TOKENIZER'
 
 TOKENIZER_ARGS=(
     --tokenizer-type GPT2BPETokenizer
-    --vocab-file $WORKDIR/gpt2-vocab.json
-    --merge-file $WORKDIR/gpt2-merges.txt
+    --vocab-file $WORKDIR/data/gpt2-vocab.json
+    --merge-file $WORKDIR/data/gpt2-merges.txt
 )
 
 DATA_ARGS=(
