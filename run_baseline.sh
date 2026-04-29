@@ -103,6 +103,7 @@ fi
 ################ Generate script ################
 mkdir -p logs
 
+TIMESTAMP=$(date +%m-%d_%H-%M-%S)
 SCRIPT="logs/${JOB_NAME}.sbatch"
 
 cat > "$SCRIPT" << 'HEADER'
@@ -113,8 +114,8 @@ cat >> "$SCRIPT" << SBATCH_DIRECTIVES
 #SBATCH --account=lsaie-ss26
 #SBATCH --time=${TIME}
 #SBATCH --job-name=${JOB_NAME}
-#SBATCH --output=logs/%m-%d_%H-%M-%S-%x-%j.log
-#SBATCH --error=logs/%m-%d_%H-%M-%S-%x-%j.log
+#SBATCH --output=logs/${TIMESTAMP}-%x-%j.log
+#SBATCH --error=logs/${TIMESTAMP}-%x-%j.log
 #SBATCH --nodes=${NODES}
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4
