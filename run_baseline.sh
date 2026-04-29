@@ -30,10 +30,10 @@ case $MODE in
     train)
         TRAINING_STEPS=${3:?Usage: ./run_baseline train <model_size> <steps> [nodes]}
         NODES=${4:-4}
-        TIME=02:30:00
-        EVAL_INTERVAL=1000
-        EVAL_ITERS=10
-        LR_WARMUP_ITERS=200
+        TIME=00:35:00
+        EVAL_INTERVAL=$TRAINING_STEPS
+        EVAL_ITERS=0 
+        LR_WARMUP_ITERS=20
         LOGGING_EXTRA="
     --tensorboard-dir \$TENSORBOARD_DIR
     --log-timers-to-tensorboard

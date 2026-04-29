@@ -2,3 +2,6 @@ logs/
 experiments/
 dataset_cache/
 data/climbmix_small/
+.inductor_cache/
+.triton_cache/
+cache/
