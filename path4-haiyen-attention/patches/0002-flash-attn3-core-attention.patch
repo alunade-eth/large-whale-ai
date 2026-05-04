@@ -1,0 +1,226 @@
+diff --git a/gpt_builders.py b/gpt_builders.py
+index dfe41f7b8..b65272072 100644
+--- a/gpt_builders.py
++++ b/gpt_builders.py
+@@ -138,6 +138,7 @@ def _get_transformer_layer_spec(use_te, config):
+             use_kitchen=config.use_kitchen,
+             use_kitchen_attention=config.use_kitchen_attention,
+             kitchen_attention_backend=config.kitchen_attention_backend,
++            use_flash_attn_v3=getattr(args, 'use_flash_attn_v3', False),
+         )
+     elif config.transformer_impl == "inference_optimized":
+         return get_gpt_layer_with_inference_spec(
+diff --git a/megatron/core/extensions/transformer_engine_spec_provider.py b/megatron/core/extensions/transformer_engine_spec_provider.py
+index a071959bf..40e582de6 100644
+--- a/megatron/core/extensions/transformer_engine_spec_provider.py
++++ b/megatron/core/extensions/transformer_engine_spec_provider.py
+@@ -14,6 +14,7 @@ from megatron.core.extensions.transformer_engine import (
+     TERowParallelGroupedLinear,
+     TERowParallelLinear,
+ )
++from megatron.core.transformer.dot_product_attention import FA3DotProductAttention, HAVE_FA3_TRAINING
+ from megatron.core.fusions.fused_layer_norm import FusedLayerNorm
+ from megatron.core.models.backends import BackendSpecProvider
+ from megatron.core.tensor_parallel.layers import ColumnParallelLinear, RowParallelLinear
+@@ -93,3 +94,20 @@ class TESpecProvider(BackendSpecProvider):
+     def activation_func(self) -> type:
+         """Which module to use for activation function"""
+         return TEActivationOp
++
++
++class FA3SpecProvider(TESpecProvider):
++    """TESpecProvider variant that uses FlashAttention 3 for core attention.
++
++    All other modules (linear layers, layer norms, MLP, etc.) remain identical
++    to TESpecProvider so that only the attention kernel is swapped.
++    """
++
++    def core_attention(self) -> type:
++        """Return FA3DotProductAttention, fail fast if FA3 is not installed."""
++        if not HAVE_FA3_TRAINING:
++            raise ImportError(
++                "FlashAttention 3 is not installed but --use-flash-attention-v3 was requested. "
++                "Install flash_attn_3 or flashattn_hopper inside the container."
++            )
++        return FA3DotProductAttention
+diff --git a/megatron/core/models/gpt/gpt_layer_specs.py b/megatron/core/models/gpt/gpt_layer_specs.py
+index 49501ee54..f05f71b8d 100755
+--- a/megatron/core/models/gpt/gpt_layer_specs.py
++++ b/megatron/core/models/gpt/gpt_layer_specs.py
+@@ -43,7 +43,7 @@ try:
+     import transformer_engine as te  # type: ignore[import-untyped]  # pylint: disable=unused-import
+ 
+     from megatron.core.extensions.transformer_engine import TEFusedMLP, TENorm
+-    from megatron.core.extensions.transformer_engine_spec_provider import TESpecProvider
++    from megatron.core.extensions.transformer_engine_spec_provider import TESpecProvider, FA3SpecProvider
+ 
+     HAVE_TE = True
+ except ImportError:
+@@ -181,6 +181,7 @@ def get_gpt_layer_with_transformer_engine_spec(
+     use_te_activation_func: bool = False,
+     use_kitchen_attention: bool = False,
+     kitchen_attention_backend: str = "sdpa",
++    use_flash_attn_v3: bool = False,
+ ) -> ModuleSpec:
+     """Use this spec to use lower-level Transformer Engine modules (required for fp8 training).
+ 
+@@ -218,6 +219,9 @@ def get_gpt_layer_with_transformer_engine_spec(
+             raise AssertionError("use_te_op_fuser not compatible with using kitchen in mlp.")
+         if use_te_activation_func:
+             raise AssertionError("use_te_activation_func not compatible with using kitchen.")
++    elif use_flash_attn_v3:
++        assert HAVE_TE, "--use-flash-attention-v3 requires transformer_engine to be installed"
++        backend = FA3SpecProvider()
+     else:
+         backend = TESpecProvider()
+ 
+diff --git a/megatron/core/transformer/dot_product_attention.py b/megatron/core/transformer/dot_product_attention.py
+index 69039e0bf..3953283e7 100644
+--- a/megatron/core/transformer/dot_product_attention.py
++++ b/megatron/core/transformer/dot_product_attention.py
+@@ -22,6 +22,17 @@ from megatron.core.transformer.utils import (
+ )
+ from megatron.core.utils import divide
+ 
++try:
++    from flash_attn_3.flash_attn_interface import flash_attn_func as _fa3_flash_attn_func
++    HAVE_FA3_TRAINING = True
++except ImportError:
++    try:
++        from flashattn_hopper.flash_attn_interface import flash_attn_func as _fa3_flash_attn_func
++        HAVE_FA3_TRAINING = True
++    except ImportError:
++        _fa3_flash_attn_func = None
++        HAVE_FA3_TRAINING = False
++
+ 
+ class DotProductAttention(MegatronModule):
+     """
+@@ -269,3 +280,112 @@ class DotProductAttention(MegatronModule):
+             tp_group=self.tp_group,
+             dp_cp_group=metadata['dp_cp_group'],
+         )
++
++
++class FA3DotProductAttention(MegatronModule):
++    """Core attention using FlashAttention 3.
++
++    Drop-in replacement for TEDotProductAttention that calls the FA3 kernel
++    directly. Accepts Megatron's sbhd tensor layout, converts to FA3's bshd,
++    runs the fused kernel, then converts back.
++
++    Supports causal masking and GQA. Packed-sequence (thd) format and
++    attention bias are not supported; assert if attempted.
++    """
++
++    def __init__(
++        self,
++        config: TransformerConfig,
++        layer_number: int,
++        attn_mask_type: AttnMaskType,
++        attention_type: str,
++        attention_dropout: Optional[float] = None,
++        softmax_scale: Optional[float] = None,
++        cp_comm_type: Optional[str] = None,
++        pg_collection: Optional[ProcessGroupCollection] = None,
++        **kwargs,
++    ):
++        super().__init__(config=config)
++
++        if not HAVE_FA3_TRAINING:
++            raise ImportError(
++                "FlashAttention 3 is not installed. "
++                "Install flash_attn_3 or flashattn_hopper to use --use-flash-attention-v3."
++            )
++
++        self.config = config
++        self.attn_mask_type = attn_mask_type
++
++        world_size = parallel_state.get_tensor_model_parallel_world_size()
++        self.hidden_size_per_attention_head = config.kv_channels
++        self.num_attention_heads_per_partition = divide(config.num_attention_heads, world_size)
++        self.num_query_groups_per_partition = divide(config.num_query_groups, world_size)
++        self.hidden_size_per_partition = (
++            self.hidden_size_per_attention_head * self.num_attention_heads_per_partition
++        )
++
++        if softmax_scale is None:
++            self.softmax_scale = 1.0 / math.sqrt(self.hidden_size_per_attention_head)
++        else:
++            self.softmax_scale = softmax_scale
++
++        self.dropout_p = (
++            config.attention_dropout if attention_dropout is None else attention_dropout
++        )
++
++    def forward(
++        self,
++        query: Tensor,
++        key: Tensor,
++        value: Tensor,
++        attention_mask: Optional[Tensor],
++        attn_mask_type: Optional[AttnMaskType] = None,
++        attention_bias: Optional[Tensor] = None,
++        packed_seq_params: Optional[PackedSeqParams] = None,
++        **kwargs,
++    ) -> Tensor:
++        """Forward pass using FlashAttention 3.
++
++        Args:
++            query: [sq, b, np, hn]  Megatron sbhd layout
++            key:   [sk, b, ng, hn]
++            value: [sk, b, ng, hn]
++
++        Returns:
++            context: [sq, b, np*hn]
++        """
++        assert packed_seq_params is None, (
++            "Packed sequences (thd format) are not supported by FA3DotProductAttention."
++        )
++        assert attention_bias is None, (
++            "Attention bias is not supported by FA3DotProductAttention."
++        )
++
++        sq, b, np, hn = query.shape
++
++        # sbhd -> bshd: permute() is zero-copy (only reorders strides).
++        # FA3 uses maybe_contiguous() internally and only copies when stride(-1) != 1.
++        # Swapping dims 0 and 1 leaves the headdim stride at 1, so no copy occurs.
++        q = query.permute(1, 0, 2, 3)
++        k = key.permute(1, 0, 2, 3)
++        v = value.permute(1, 0, 2, 3)
++
++        _mask_type = attn_mask_type if attn_mask_type is not None else self.attn_mask_type
++        causal = _mask_type in (AttnMaskType.causal, AttnMaskType.padding_causal)
++
++        dropout_p = self.dropout_p if self.training else 0.0
++
++        output = _fa3_flash_attn_func(
++            q, k, v,
++            dropout_p=dropout_p,
++            softmax_scale=self.softmax_scale,
++            causal=causal,
++        )
++
++        # bshd -> sbhd, flatten heads: [sq, b, np*hn].
++        # view() folds np*hn into hp (zero-copy on the contiguous FA3 output).
++        # transpose() swaps batch and seq back (zero-copy).
++        # One contiguous() copy produces the layout TERowParallelLinear expects.
++        output = output.view(b, sq, -1).transpose(0, 1).contiguous()
++
++        return output
+diff --git a/megatron/training/arguments.py b/megatron/training/arguments.py
+index 46f3c28b1..c2d66de2d 100644
+--- a/megatron/training/arguments.py
++++ b/megatron/training/arguments.py
+@@ -2053,6 +2053,10 @@ def _add_training_args(parser):
+     group.add_argument('--use-flash-attn', action='store_true',
+                        help='use FlashAttention implementation of attention. '
+                        'https://arxiv.org/abs/2205.14135')
++    group.add_argument('--use-flash-attention-v3', action='store_true',
++                       help='Replace TEDotProductAttention with FlashAttention 3 '
++                       '(requires flash_attn_3 or flashattn_hopper package). '
++                       'All other training settings remain unchanged.')
+     group.add_argument('--optimizer', type=str, default='adam',
+                        choices=['adam', 'sgd', 'muon', 'dist_muon'],
+                        help='Optimizer function')
