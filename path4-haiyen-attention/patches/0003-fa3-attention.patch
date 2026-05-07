@@ -145,9 +145,9 @@ index 69039e0bf..fec44b832 100644
 +        k = key.permute(1, 0, 2, 3).contiguous()
 +        v = value.permute(1, 0, 2, 3).contiguous()
 +        out = _FA3Func.apply(q, k, v, self.softmax_scale, True)
-+        # [b, sq, np, hn] -> [sq, b, np, hn] -> [sq, b, hp]
-+        out = out.permute(1, 0, 2, 3).contiguous()
-+        return out.view(out.size(0), out.size(1), -1)
++        # [b, sq, np, hn] -> [sq, b, hp]
++        out = out.permute(1, 0, 2, 3)
++        return out.reshape(out.size(0), out.size(1), -1)
 diff --git a/megatron/training/arguments.py b/megatron/training/arguments.py
 index 46f3c28b1..0e31d6d5b 100644
 --- a/megatron/training/arguments.py

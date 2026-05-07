@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --account=lsaie-ss26
 #SBATCH --time=00:15:00
-#SBATCH --job-name=fa3v4-1n-pg
+#SBATCH --job-name=fa3v4-1n-opt
 #SBATCH --output=/users/%u/scratch/large-whale-ai/path4-haiyen-attention/logs/%x-%j.log
 #SBATCH --error=/users/%u/scratch/large-whale-ai/path4-haiyen-attention/logs/%x-%j.log
 #SBATCH --nodes=1
@@ -30,7 +30,7 @@ SEQ_LEN=4096
 TRAINING_STEPS=15
 
 EXP_DIR=$WORKDIR/experiments
-EXP_NAME=fa3v4-test-1n-pg
+EXP_NAME=fa3v4-test-1n-opt
 LOG_DIR=$EXP_DIR/$EXP_NAME
 
 mkdir -p $PATH4_DIR/logs $EXP_DIR $LOG_DIR
