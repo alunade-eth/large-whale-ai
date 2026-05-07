@@ -1,0 +1,1 @@
+0: [default2]:[rank2]: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 128.00 MiB. GPU 2 has a total capacity of 95.00 GiB of which 99.06 MiB is free. Including non-PyTorch memory, this process has 94.89 GiB memory in use. Of the allocated memory 91.20 GiB is allocated by PyTorch, and 987.85 MiB is reserved by PyTorch but unallocated.

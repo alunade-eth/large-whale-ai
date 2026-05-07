@@ -1,0 +1,1 @@
+0: [default3]:[rank3]: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 896.00 MiB. GPU 3 has a total capacity of 95.00 GiB of which 864.88 MiB is free. Including non-PyTorch memory, this process has 94.14 GiB memory in use. Of the allocated memory 88.79 GiB is allocated by PyTorch, and 2.43 GiB is reserved by PyTorch but unallocated.
