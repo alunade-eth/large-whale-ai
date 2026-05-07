@@ -1,0 +1,163 @@
+diff --git a/gpt_builders.py b/gpt_builders.py
+index dfe41f7b8..9b3b50c5a 100644
+--- a/gpt_builders.py
++++ b/gpt_builders.py
+@@ -138,6 +138,7 @@ def _get_transformer_layer_spec(use_te, config):
+             use_kitchen=config.use_kitchen,
+             use_kitchen_attention=config.use_kitchen_attention,
+             kitchen_attention_backend=config.kitchen_attention_backend,
++            use_flash_attn_v3=getattr(args, 'use_flash_attention_v3', False),
+         )
+     elif config.transformer_impl == "inference_optimized":
+         return get_gpt_layer_with_inference_spec(
+diff --git a/megatron/core/extensions/transformer_engine_spec_provider.py b/megatron/core/extensions/transformer_engine_spec_provider.py
+index a071959bf..ef453100b 100644
+--- a/megatron/core/extensions/transformer_engine_spec_provider.py
++++ b/megatron/core/extensions/transformer_engine_spec_provider.py
+@@ -93,3 +93,19 @@ class TESpecProvider(BackendSpecProvider):
+     def activation_func(self) -> type:
+         """Which module to use for activation function"""
+         return TEActivationOp
++
++
++class FA3SpecProvider(TESpecProvider):
++    """TE spec provider with FlashAttention 3 replacing TEDotProductAttention."""
++
++    def core_attention(self) -> type:
++        from megatron.core.transformer.dot_product_attention import (
++            HAVE_FA3,
++            FA3DotProductAttention,
++        )
++        if not HAVE_FA3:
++            raise ImportError(
++                "FlashAttention 3 is not installed but --use-flash-attention-v3 was requested. "
++                "Install flash_attn_3 or flashattn_hopper inside the container."
++            )
++        return FA3DotProductAttention
+diff --git a/megatron/core/models/gpt/gpt_layer_specs.py b/megatron/core/models/gpt/gpt_layer_specs.py
+index 49501ee54..b9667cc5f 100755
+--- a/megatron/core/models/gpt/gpt_layer_specs.py
++++ b/megatron/core/models/gpt/gpt_layer_specs.py
+@@ -181,6 +181,7 @@ def get_gpt_layer_with_transformer_engine_spec(
+     use_te_activation_func: bool = False,
+     use_kitchen_attention: bool = False,
+     kitchen_attention_backend: str = "sdpa",
++    use_flash_attn_v3: bool = False,
+ ) -> ModuleSpec:
+     """Use this spec to use lower-level Transformer Engine modules (required for fp8 training).
+ 
+@@ -207,7 +208,10 @@ def get_gpt_layer_with_transformer_engine_spec(
+             " and will be removed soon. Please update your code accordingly."
+         )
+ 
+-    if use_kitchen:
++    if use_flash_attn_v3:
++        from megatron.core.extensions.transformer_engine_spec_provider import FA3SpecProvider
++        backend: BackendSpecProvider = FA3SpecProvider()
++    elif use_kitchen:
+         assert HAVE_KITCHEN
+         backend: BackendSpecProvider = KitchenSpecProvider(
+             fallback=TESpecProvider(),
+diff --git a/megatron/core/transformer/dot_product_attention.py b/megatron/core/transformer/dot_product_attention.py
+index 69039e0bf..fec44b832 100644
+--- a/megatron/core/transformer/dot_product_attention.py
++++ b/megatron/core/transformer/dot_product_attention.py
+@@ -269,3 +269,85 @@ class DotProductAttention(MegatronModule):
+             tp_group=self.tp_group,
+             dp_cp_group=metadata['dp_cp_group'],
+         )
++
++
++try:
++    from flash_attn_3.flash_attn_interface import flash_attn_3_gpu as _fa3_gpu
++    HAVE_FA3 = True
++except ImportError:
++    try:
++        from flashattn_hopper.flash_attn_interface import flash_attn_3_gpu as _fa3_gpu
++        HAVE_FA3 = True
++    except ImportError:
++        _fa3_gpu = None
++        HAVE_FA3 = False
++
++
++class _FA3Func(torch.autograd.Function):
++    """Direct FA3 forward/backward bypassing torch.library.custom_op mutates_args."""
++
++    @staticmethod
++    def forward(ctx, q, k, v, softmax_scale, causal):
++        out, softmax_lse, _, _ = _fa3_gpu.fwd(
++            q, k, v,
++            None, None, None, None,
++            None, None, None,
++            None, None,
++            None, None,
++            None, None, None,
++            None, None, None,
++            None, None, None,
++            softmax_scale, causal,
++            -1, -1, 0, 0.0, False, None, 1, None, 0,
++        )
++        ctx.save_for_backward(q, k, v, out, softmax_lse)
++        ctx.softmax_scale = softmax_scale
++        ctx.causal = causal
++        return out
++
++    @staticmethod
++    def backward(ctx, dout):
++        q, k, v, out, softmax_lse = ctx.saved_tensors
++        dq, dk, dv = torch.empty_like(q), torch.empty_like(k), torch.empty_like(v)
++        _fa3_gpu.bwd(
++            dout.contiguous(), q, k, v, out, softmax_lse,
++            dq, dk, dv,
++            None, None, None, None, None, None,
++            ctx.softmax_scale, ctx.causal, -1, -1, 0.0, False, 0,
++        )
++        return dq, dk, dv, None, None
++
++
++class FA3DotProductAttention(DotProductAttention):
++    """FlashAttention 3 — SM90 TMA/WGMMA fused attention, GQA-native."""
++
++    def forward(
++        self,
++        query: Tensor,
++        key: Tensor,
++        value: Tensor,
++        attention_mask,
++        attn_mask_type=None,
++        attention_bias=None,
++        packed_seq_params=None,
++    ) -> Tensor:
++        assert packed_seq_params is None, (
++            "Packed sequence is not supported by FA3DotProductAttention."
++        )
++        assert attention_bias is None, (
++            "Attention bias is not supported by FA3DotProductAttention."
++        )
++        if not HAVE_FA3:
++            raise ImportError(
++                "FlashAttention 3 is not installed but --use-flash-attention-v3 was requested. "
++                "Install flash_attn_3 or flashattn_hopper inside the container."
++            )
++        # Megatron layout: sbhd [sq, b, np, hn]
++        # FA3 expects:     bshd [b, sq, np, hn]
++        q = query.permute(1, 0, 2, 3).contiguous()
++        k = key.permute(1, 0, 2, 3).contiguous()
++        v = value.permute(1, 0, 2, 3).contiguous()
++        out = _FA3Func.apply(q, k, v, self.softmax_scale, True)
++        # [b, sq, np, hn] -> [sq, b, np, hn] -> [sq, b, hp]
++        out = out.permute(1, 0, 2, 3).contiguous()
++        return out.view(out.size(0), out.size(1), -1)
+diff --git a/megatron/training/arguments.py b/megatron/training/arguments.py
+index 46f3c28b1..0e31d6d5b 100644
+--- a/megatron/training/arguments.py
++++ b/megatron/training/arguments.py
+@@ -2053,6 +2053,8 @@ def _add_training_args(parser):
+     group.add_argument('--use-flash-attn', action='store_true',
+                        help='use FlashAttention implementation of attention. '
+                        'https://arxiv.org/abs/2205.14135')
++    group.add_argument('--use-flash-attention-v3', action='store_true',
++                       help='use FlashAttention 3 (SM90 TMA/WGMMA, GQA-native).')
+     group.add_argument('--optimizer', type=str, default='adam',
+                        choices=['adam', 'sgd', 'muon', 'dist_muon'],
+                        help='Optimizer function')
