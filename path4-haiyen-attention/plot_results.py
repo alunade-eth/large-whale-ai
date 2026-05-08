@@ -44,9 +44,23 @@ def window_stats(path: Path, step_lo: int = 200, step_hi: int = 250):
 
 LOG_DIR = Path(__file__).parent / "logs"
 
+TE_BASELINE_LOG = Path("/users/course_00170/scratch/large-whale-ai/path1-caspar-reduce-floats/backlog/gipfel-train-8b-250s-4n-baseline-35min-1969685.log")
+
+SEQLEN_RUNS = {
+    # backend -> {seqlen -> (mean, std, log_or_None)}
+    "TE": {
+        4096: (None, None, TE_BASELINE_LOG),
+        8192: (None, None, LOG_DIR / "gipfel-te-train-8b-250s-4n-seq8192-2065622.log"),
+    },
+    "FA3": {
+        4096: (None, None, LOG_DIR / "gipfel-fa3v4-train-8b-250s-4n-pg-2059247.log"),
+        8192: (None, None, LOG_DIR / "gipfel-fa3-train-8b-250s-4n-seq8192-2065623.log"),
+    },
+}
+
 RUNS = {
     # (mean, std, log_path_or_None)
-    "TE\n(baseline)": (10533, 0, None),   # course reference run; no log available
+    "TE\n(baseline)": (None, None, TE_BASELINE_LOG),
     "cuDNN\n(baseline)": (None, None, LOG_DIR / "gipfel-cudnn-train-8b-250s-4n-2048491.log"),
     "FA3\n(no overlap-pg)": (None, None, LOG_DIR / "gipfel-fa3v4-train-8b-250s-4n-nopg-2058726.log"),
     "FA3\n(+ overlap-pg)": (None, None, LOG_DIR / "gipfel-fa3v4-train-8b-250s-4n-pg-2059247.log"),
@@ -127,8 +141,9 @@ def figure_training_curve(out_path: Path):
                 label=label, alpha=0.85)
 
     # baselines as horizontal lines
-    ax.axhline(10533, color="#7f8c8d", linewidth=1.0,
-               linestyle="--", label="TE baseline (10,533)")
+    te_mean, _ = window_stats(TE_BASELINE_LOG)
+    ax.axhline(te_mean, color="#7f8c8d", linewidth=1.0,
+               linestyle="--", label=f"TE baseline ({te_mean:,.0f})")
     ax.axhline(10555, color="#95a5a6", linewidth=1.0,
                linestyle=":",  label="cuDNN baseline (10,555)")
 
@@ -148,6 +163,71 @@ def figure_training_curve(out_path: Path):
 
 
 
+# Figure 3 - grouped bar chart: TE vs FA3 across sequence lengths
+
+
+def figure_seqlen(out_path: Path):
+    seqlens = [4096, 8192]
+    backends = list(SEQLEN_RUNS.keys())
+    colours = {"TE": "#7f8c8d", "FA3": "#27ae60"}
+    width = 0.35
+
+    fig, ax = plt.subplots(figsize=(7, 4.5))
+    x = np.arange(len(seqlens))
+
+    for i, backend in enumerate(backends):
+        means, stds = [], []
+        for sl in seqlens:
+            mean, std, log = SEQLEN_RUNS[backend][sl]
+            if log is not None:
+                mean, std = window_stats(log)
+            means.append(mean)
+            stds.append(std)
+
+        offset = (i - 0.5) * width
+        bars = ax.bar(x + offset, means, width, yerr=stds, capsize=4,
+                      label=backend, color=colours[backend],
+                      edgecolor="white", linewidth=0.8,
+                      error_kw=dict(elinewidth=1.2, ecolor="#2c3e50"))
+
+        for bar, mean, std in zip(bars, means, stds):
+            ax.text(bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + std + 30,
+                    f"{mean:,.0f}", ha="center", va="bottom",
+                    fontsize=8.5, fontweight="bold")
+
+        # annotate % gain of FA3 over TE per seqlen
+        if backend == "FA3":
+            for j, sl in enumerate(seqlens):
+                te_entry = SEQLEN_RUNS["TE"][sl]
+                te_mean = te_entry[0] if te_entry[0] is not None else window_stats(te_entry[2])[0]
+                fa3_mean = means[j]
+                pct = (fa3_mean / te_mean - 1) * 100
+                ax.annotate(f"+{pct:.1f}%",
+                            xy=(x[j] + offset, means[j] + stds[j] + 120),
+                            ha="center", fontsize=8, color="#1a8a4a", fontweight="bold")
+
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"seq={sl:,}" for sl in seqlens], fontsize=11)
+    ax.set_ylabel("Throughput (tok/s/GPU)", fontsize=11)
+    ax.set_title("TE vs FA3 throughput scaling with sequence length\n"
+                 "LLaMA-8B, 4 nodes / 16 GH200 GPUs, steps 200–250", fontsize=11)
+    ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda v, _: f"{v:,.0f}"))
+
+    all_vals = [SEQLEN_RUNS[b][sl][0] or window_stats(SEQLEN_RUNS[b][sl][2])[0]
+                for b in backends for sl in seqlens if SEQLEN_RUNS[b][sl][2] is None
+                or SEQLEN_RUNS[b][sl][2].exists()]
+    ax.set_ylim(min(all_vals) * 0.94, max(all_vals) * 1.06)
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.yaxis.grid(True, linestyle="--", alpha=0.4)
+    ax.set_axisbelow(True)
+    ax.legend(fontsize=10, framealpha=0.7)
+
+    fig.tight_layout()
+    fig.savefig(out_path, format="pdf", bbox_inches="tight")
+    print(f"Saved {out_path}")
+
+
 # Main
 
 
@@ -161,6 +241,7 @@ def main():
 
     figure_bar(out / "fig1_throughput_comparison.pdf")
     figure_training_curve(out / "fig2_training_curve.pdf")
+    figure_seqlen(out / "fig3_seqlen_scaling.pdf")
 
 
 if __name__ == "__main__":
