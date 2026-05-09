@@ -11,7 +11,6 @@
 #SBATCH --mem=460000
 #SBATCH --no-requeue
 #SBATCH --mail-type=BEGIN,END,FAIL
-#SBATCH --mail-user=sofiatoik@gmail.com
 
 echo "START TIME: $(date)"
 
