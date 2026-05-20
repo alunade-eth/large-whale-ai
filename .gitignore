@@ -1,25 +1,8 @@
-# Logs and outputs
 logs/
-*.log
 experiments/
 dataset_cache/
-
-# Python
-__pycache__/
-*.pyc
-*.pyo
-
-# Large files
-*.bin
-*.idx
-*.pth
-*.pt
-
-# Slurm files
-slurm-*.out
-.eggs/
-
-# Environment
-venv/
-.env
-alps3.toml
+data/climbmix_small/
+.inductor_cache/
+.triton_cache/
+cache/
+.venv
