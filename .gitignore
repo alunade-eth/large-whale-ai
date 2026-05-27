@@ -6,3 +6,4 @@ data/climbmix_small/
 .triton_cache/
 cache/
 .venv
+*.code-workspace
